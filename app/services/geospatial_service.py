@@ -1,6 +1,5 @@
 import geopandas as gpd
 import pandas as pd
-import math
 import zipfile
 import tempfile
 from pathlib import Path
@@ -8,32 +7,56 @@ from pathlib import Path
 
 def read_geospatial_file(file_path: str):
     """
-    Read a KML or zipped Shapefile.
+    Read a KML file or a ZIP file containing a Shapefile.
     """
 
     path = Path(file_path)
 
+    # Read KML
     if path.suffix.lower() == ".kml":
         return gpd.read_file(path)
 
+    # Read ZIP containing Shapefile
     if path.suffix.lower() == ".zip":
 
         temp_dir = tempfile.mkdtemp()
+        temp_path = Path(temp_dir).resolve()
 
         with zipfile.ZipFile(path, "r") as zip_ref:
+
             for member in zip_ref.infolist():
-                target_path = Path(temp_dir) / member.filename
 
-                if not str(target_path.resolve()).startswith(
-                    str(Path(temp_dir).resolve())
-            ):
-                    raise ValueError("Unsafe ZIP file")
+                member_path = Path(member.filename)
 
-            zip_ref.extract(member, temp_dir)
+                target_path = (
+                    temp_path / member_path
+                ).resolve()
 
-        temp_path = Path(temp_dir)
+                # Prevent ZIP path traversal
+                if not str(target_path).startswith(
+                    str(temp_path)
+                ):
+                    raise ValueError(
+                        "Unsafe ZIP file: path traversal detected"
+                    )
 
-        shapefiles = list(temp_path.rglob("*.shp"))
+                # Skip directories
+                if member.is_dir():
+                    continue
+
+                target_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True
+                )
+
+                with zip_ref.open(member) as source:
+                    with open(target_path, "wb") as target:
+                        target.write(source.read())
+
+        # Find Shapefile
+        shapefiles = list(
+            temp_path.rglob("*.shp")
+        )
 
         if not shapefiles:
             raise ValueError(
@@ -43,7 +66,8 @@ def read_geospatial_file(file_path: str):
         return gpd.read_file(shapefiles[0])
 
     raise ValueError(
-        "Unsupported file format. Only KML and ZIP files are supported."
+        "Unsupported file format. "
+        "Only KML and ZIP files are supported."
     )
 
 
@@ -81,7 +105,9 @@ def extract_features(gdf):
         for column in gdf.columns:
 
             if column != "geometry":
-                properties[column] = clean_value(row[column])
+                properties[column] = clean_value(
+                    row[column]
+                )
 
         feature = {
             "feature_id": index,
@@ -107,15 +133,23 @@ def calculate_measurement(gdf):
 
     measurement_gdf = gdf.copy()
 
-    # Transform geographic coordinates into a projected CRS
-    # before calculating measurements.
-    if measurement_gdf.crs and measurement_gdf.crs.is_geographic:
+    # Transform geographic CRS into
+    # a projected CRS before measuring.
+    if (
+        measurement_gdf.crs
+        and measurement_gdf.crs.is_geographic
+    ):
 
-        projected_crs = measurement_gdf.estimate_utm_crs()
+        projected_crs = (
+            measurement_gdf.estimate_utm_crs()
+        )
 
         if projected_crs:
-            measurement_gdf = measurement_gdf.to_crs(
-                projected_crs
+
+            measurement_gdf = (
+                measurement_gdf.to_crs(
+                    projected_crs
+                )
             )
 
     measurements = []
@@ -130,13 +164,23 @@ def calculate_measurement(gdf):
             "geometry_type": geometry_type
         }
 
-        if geometry_type in ["Polygon", "MultiPolygon"]:
+        if geometry_type in [
+            "Polygon",
+            "MultiPolygon"
+        ]:
 
-            measurement["area_square_meters"] = geometry.area
+            measurement[
+                "area_square_meters"
+            ] = geometry.area
 
-        elif geometry_type in ["LineString", "MultiLineString"]:
+        elif geometry_type in [
+            "LineString",
+            "MultiLineString"
+        ]:
 
-            measurement["length_meters"] = geometry.length
+            measurement[
+                "length_meters"
+            ] = geometry.length
 
         elif geometry_type == "Point":
 
